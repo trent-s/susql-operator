@@ -11,7 +11,7 @@ if ! command -v kubectl &> /dev/null; then
 fi
 
 if [[ ! -z ${SUSQL_ENHANCED} ]]; then
-    echo "Deploying enhanced SusQL configuration."
+    echo "->Deploying enhanced SusQL configuration."
 fi
 
 # Check if there is a current context
@@ -25,6 +25,7 @@ else # continue
 fi
 
 export SUSQL_NAMESPACE="openshift-kepler-operator"
+export KEPLER_PROMETHEUS_NAMESPACE="openshift-monitoring"
 
 if [[ -z ${PROMETHEUS_PROTOCOL} ]]; then
     PROMETHEUS_PROTOCOL="http"
@@ -86,6 +87,19 @@ if [[ -z ${SUSQL_IMAGE_TAG} ]]; then
     SUSQL_IMAGE_TAG="latest"
 fi
 
+# display configured variables 
+echo "==================================================================================================="
+echo "SUSQL_NAMESPACE - '${SUSQL_NAMESPACE}'"
+echo "KEPLER_PROMETHEUS_NAMESPACE - '${KEPLER_PROMETHEUS_NAMESPACE}'"
+echo "PROMETHEUS_PROTOCOL - '${PROMETHEUS_PROTOCOL}'"
+echo "PROMETHEUS_SERVICE - '${PROMETHEUS_SERVICE}'"
+echo "PROMETHEUS_NAMESPACE - '${PROMETHEUS_NAMESPACE}'"
+echo "PROMETHEUS_DOMAIN - '${PROMETHEUS_DOMAIN}'"
+echo "PROMETHEUS_PORT - '${PROMETHEUS_PORT}'"
+echo "KEPLER_PROMETHEUS_URL - '${KEPLER_PROMETHEUS_URL}'"
+echo "SUSQL_PROMETHEUS_URL - '${SUSQL_PROMETHEUS_URL}'"
+echo "SUSQL_ENHANCED Enabled - '${SUSQL_ENHANCED}'"
+echo "==================================================================================================="
 # Actions to perform, separated by comma
 actions=${1:-"kepler-check,prometheus-undeploy,prometheus-deploy,susql-undeploy,susql-deploy"}
 
@@ -93,23 +107,33 @@ for action in $(echo ${actions} | tr ',' '\n')
 do
     if [[ ${action} = "kepler-check" ]]; then
         # Check if Kepler is serving metrics through prometheus
-        echo "Checking if Kepler is deployed..."
+        echo "->Checking if Kepler is deployed..."
 
-        sed "s|KEPLER_PROMETHEUS_URL|${KEPLER_PROMETHEUS_URL}|g" kepler-check.yaml | kubectl apply --namespace ${SUSQL_NAMESPACE} -f -
+        sed "s|KEPLER_PROMETHEUS_URL|${KEPLER_PROMETHEUS_URL}|g" kepler-check.yaml | kubectl apply --namespace ${KEPLER_PROMETHEUS_NAMESPACE} -f -
 
+        echo "->Checking kepler-check status";
         while true
         do
-            phase=$(kubectl get pod kepler-check -o jsonpath='{.status.phase}' --namespace ${SUSQL_NAMESPACE})
+            echo -n "." && sleep 1;
+            phase=$(kubectl get pod kepler-check -o jsonpath='{.status.phase}' --namespace ${KEPLER_PROMETHEUS_NAMESPACE})
 
             if [[ ${phase} != "Pending" ]] && [[ ${phase} != "Running" ]]; then
                 break
             fi
         done
 
-        logs=$(kubectl logs -f kepler-check --namespace ${SUSQL_NAMESPACE})
-        kubectl delete -f kepler-check.yaml --namespace ${SUSQL_NAMESPACE}
+        echo ""
+        echo "Kepler check '${phase}'"
 
+        logs=$(kubectl logs -f kepler-check --namespace ${KEPLER_PROMETHEUS_NAMESPACE})
+        echo "->Deleting kepler-check pod..."
+        kubectl delete -f kepler-check.yaml --namespace ${KEPLER_PROMETHEUS_NAMESPACE}
+
+        echo "->Kepler service"
         if [[ ${phase} == "Failed" ]]; then
+            echo "-----------------"
+            echo "Kepler check logs"
+            echo "-----------------"
             echo ${logs}
             echo "Kepler service at '${KEPLER_PROMETHEUS_URL}' was not found. Check values and try again."
             exit 1
@@ -119,23 +143,40 @@ do
 
     elif [[ ${action} = "prometheus-deploy" ]]; then
         # Install prometheus from community helm charts
-        echo "Deploying Prometheus controller to store susql data..."
+        echo "->Deploying Prometheus controller to store susql data..."
 
         helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
         helm repo update
         helm upgrade --install prometheus -f ${PROMETHEUS_YAML} --namespace ${SUSQL_NAMESPACE} prometheus-community/prometheus
 
     elif [[ ${action} = "prometheus-undeploy" ]]; then
-        echo "Undeploying Prometheus controller..."
+        echo "->Undeploying Prometheus controller..."
         echo "All data will be lost if the Prometheus deployment was not using a volume for permanent storage."
         echo -n "Would you like to procceed? [y/n]: "
         read response
 
         if [[ ${response} == "Y" || ${response} == "y" ]]; then
-            helm uninstall prometheus --namespace ${SUSQL_NAMESPACE}
+            output=$(helm uninstall prometheus --namespace ${SUSQL_NAMESPACE} 2>&1)
+            if [ $? -ne 0 ]; then
+                # Extract the error message
+                error_message=$(echo "$output" | tail -n 1)
+
+                # Check if the error message contains "not found"
+                if [[ "$error_message" == *"not found"* ]]; then
+                    # Custom message if release not found
+                    echo "Prometheus: release: not found"
+                else
+                    # Display the original error message
+                    echo "$error_message"
+                fi
+            else
+                # Success message if the command was successful
+                echo "Prometheus uninstall successful."
+            fi
         fi
 
     elif [[ ${action} = "susql-deploy" ]]; then
+        echo "->Deploying SusQL controller..."
         if [[ ! -z ${SUSQL_ENHANCED} ]]; then
             kubectl apply -f ../config/rbac/susql-rbac.yaml
         fi
@@ -153,16 +194,31 @@ do
         fi
 
     elif [[ ${action} = "susql-undeploy" ]]; then
-        echo "Undeploying SusQL controller..."
+        echo "->Undeploying SusQL controller..."
         echo -n "Would you like to uninstall the CRD? WARNING: Doing this would remove ALL deployments for this CRD already in the cluster. [y/n]: "
         read response
 
         if [[ ${response} == "Y" || ${response} == "y" ]]; then
-            cd ${SUSQL_DIR} && make uninstall
-            cd -
+            output=$(cd ${SUSQL_DIR} && make uninstall 2>&1)
+            if [ $? -ne 0 ]; then
+                # Extract the error message
+                error_message=$(echo "$output" | tail -n 2)
+
+                # Check if the error message contains "not found"
+                if [[ "$error_message" == *"not found"* ]]; then
+                    # Custom message if release not found
+                    echo "Susql Controller not found"
+                else
+                    # Display the original error message
+                    echo "$error_message"
+                fi
+            else
+                # Success message if the command was successful
+                echo "Susql uninstall successful."
+                helm -n ${SUSQL_NAMESPACE} uninstall susql-controller
+            fi
         fi
 
-        helm -n ${SUSQL_NAMESPACE} uninstall susql-controller
         if [[ ! -z ${SUSQL_ENHANCED} ]]; then
             kubectl delete -f ../config/rbac/susql-rbac.yaml
             kubectl delete -f ../config/servicemonitor/susql-smon.yaml
