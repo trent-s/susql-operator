@@ -19,6 +19,8 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
+	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -53,15 +55,19 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var keplerPrometheusUrl string
+	var keplerMetricName string
 	var susqlPrometheusMetricsUrl string
 	var susqlPrometheusDatabaseUrl string
+	var samplingRate string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&keplerPrometheusUrl, "kepler-prometheus-url", "", "The URL for the Prometheus server where Kepler stores the energy data")
+	flag.StringVar(&keplerMetricName, "kepler-metric-name", "kepler_container_joules_total", "The metric name to be queried in the kepler Prometheus server")
 	flag.StringVar(&susqlPrometheusDatabaseUrl, "susql-prometheus-database-url", "", "The URL for the Prometheus database where SusQL stores the energy data")
 	flag.StringVar(&susqlPrometheusMetricsUrl, "susql-prometheus-metrics-url", "", "The URL for the Prometheus metrics where SusQL exposes the energy data")
+	flag.StringVar(&samplingRate, "sampling-rate", "2", "Sampling rate in seconds")
 
 	opts := zap.Options{
 		Development: true,
@@ -95,12 +101,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	samplingRateInteger, err := strconv.Atoi(samplingRate)
+	if err != nil {
+		samplingRateInteger = 2
+	}
+
 	if err = (&controller.LabelGroupReconciler{
 		Client:                     mgr.GetClient(),
 		Scheme:                     mgr.GetScheme(),
 		KeplerPrometheusUrl:        keplerPrometheusUrl,
+		KeplerMetricName:           keplerMetricName,
 		SusQLPrometheusDatabaseUrl: susqlPrometheusDatabaseUrl,
 		SusQLPrometheusMetricsUrl:  susqlPrometheusMetricsUrl,
+		SamplingRate:               time.Duration(samplingRateInteger) * time.Second,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "LabelGroup")
 		os.Exit(1)

@@ -35,14 +35,14 @@ type LabelGroupReconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
 	KeplerPrometheusUrl        string
+	KeplerMetricName           string
 	SusQLPrometheusDatabaseUrl string
 	SusQLPrometheusMetricsUrl  string
+	SamplingRate               time.Duration               // Sampling rate for all the label groups
 }
 
 const (
-	keplerMetricName = "kepler_container_joules_total" // Kepler metric to query
 	susqlMetricName  = "susql_total_energy_joules"     // SusQL metric to query
-	samplingRate     = 2 * time.Second                 // Sampling rate for all the label groups
 	fixingDelay      = 15 * time.Second                // Time to wait in the even the label group was badly constructed
 	errorDelay       = 1 * time.Second                 // Time to wait when an error happens due to network connectivity issues
 )
@@ -175,7 +175,7 @@ func (r *LabelGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		// Aggregate Kepler measurements for these set of pods
-		metricValues, err := r.GetMetricValuesForPodNames(keplerMetricName, podNames, namespaceNames)
+		metricValues, err := r.GetMetricValuesForPodNames(r.KeplerMetricName, podNames, namespaceNames)
 
 		if err != nil {
 			fmt.Printf("ERROR [Reconcile]: Querying Prometheus didn't work: %v\n", err)
@@ -227,7 +227,7 @@ func (r *LabelGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.SetAggregatedEnergyForLabels(totalEnergy, labelGroup.Status.PrometheusLabels)
 
 		// Requeue
-		return ctrl.Result{RequeueAfter: samplingRate}, nil
+		return ctrl.Result{RequeueAfter: r.SamplingRate}, nil
 
 	default:
 		// First time seeing this object
